@@ -1,32 +1,19 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
+*~
+_*
 *.o
-*.obj
+*.d
+*.asm
+*.sym
+*.img
+vectors.S
+bootblock
+entryother
+initcode
+initcode.out
+kernel
+kernelmemfs
+mkfs
+.gdbinit
+.vscode
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+*.code-workspace
