@@ -71,6 +71,11 @@ trap(struct trapframe *tf)
     uartintr();
     lapiceoi();
     break;
+  case T_PGFLT:
+    //Call the page fault handler
+    pagefault_handler();
+    lapiceoi();
+    break;
   case T_IRQ0 + 7:
   case T_IRQ0 + IRQ_SPURIOUS:
     cprintf("cpu%d: spurious interrupt at %x:%x\n",

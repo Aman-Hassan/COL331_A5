@@ -11,5 +11,5 @@
 #define LOGSIZE      (MAXOPBLOCKS*3)  // max data blocks in on-disk log
 #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
 #define SWAPBLOCKS   (400 * 8)  // number of swap blocks
-#define FSSIZE       1000  // size of file system in blocks
+#define FSSIZE       4196  // size of file system in blocks
 

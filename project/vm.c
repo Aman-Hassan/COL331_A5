@@ -56,17 +56,20 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
-// be page-aligned.
+// be page-aligned
+
+// The below function does the following - it maps the virtual address to the physical address in the page table pgdir.
+// This would help us to 
 static int
 mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
   char *a, *last;
   pte_t *pte;
 
-  a = (char*)PGROUNDDOWN((uint)va);
-  last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
+  a = (char*)PGROUNDDOWN((uint)va); // get the page aligned address of the virtual address
+  last = (char*)PGROUNDDOWN(((uint)va) + size - 1); // get the page aligned address of the last byte of the virtual address
   for(;;){
-    if((pte = walkpgdir(pgdir, a, 1)) == 0)
+    if((pte = walkpgdir(pgdir, a, 1)) == 0) // get the page table entry for the virtual address a
       return -1;
     if(*pte & PTE_P)
       panic("remap");
@@ -312,6 +315,10 @@ clearpteu(pde_t *pgdir, char *uva)
 
 // Given a parent process's page table, create a copy
 // of it for a child.
+
+// In this lab we want to implement COW (Copy On Write) mechanism.
+// So instead of allocating new pages for the child process, we will just copy the parent's page table entries and mark them as read only.
+// Note that for simplicity we are assuming that same virtual page number of parent and child process may have the same physical page number.
 pde_t*
 copyuvm(pde_t *pgdir, uint sz)
 {
@@ -320,28 +327,104 @@ copyuvm(pde_t *pgdir, uint sz)
   uint pa, i, flags;
   char *mem;
 
-  if((d = setupkvm()) == 0)
+  if((d = setupkvm()) == 0) // d contains the new page table (setupkvm() sets up the kernel part of the page table)
     return 0;
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+  for(i = 0; i < sz; i += PGSIZE){ // loop over the parent's page table entries
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0) // get the page table entry for the virtual address i
       panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P))
+    if(!(*pte & PTE_P)) 
       panic("copyuvm: page not present");
-    pa = PTE_ADDR(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+    pa = PTE_ADDR(*pte); // get the physical address of the page
+    flags = PTE_FLAGS(*pte); // get the flags of the page
+    // if((mem = kalloc()) == 0) // allocate a new page for the child process
+    //   goto bad;
+    // instead of allocating a new page (as above), we will just copy the parent's page table entry and mark it as read only
+    // To copy the page table entry, we will just map the same physical page to the child's page table entry
+    mem = (char*)P2V(pa); // get the virtual address of the physical page
+    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags & ~PTE_W) < 0) { // map the physical page to the child's page table entry
+      //incase of error, free the memory and return
       kfree(mem);
       goto bad;
     }
+    //TODO: increment the reference count of the physical page -> Part 2 (Later)
+    // Set the page table entry of both parent and child as read only
+    *pte &= ~PTE_W;
+    *pte |= PTE_U;
+
+    // The below code is not needed as we are not allocating new pages for the child process
+    // memmove(mem, (char*)P2V(pa), PGSIZE);
+    // if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+    //   kfree(mem);
+    //   goto bad;
+    // }
   }
   return d;
 
 bad:
   freevm(d);
   return 0;
+}
+
+//! Adding page fault handler here for the time being
+// Need to handle the case when one of the processes attempt to write on to a shared page (which we marked as read-only)
+// In this case, we need to allocate a new page for the process and copy the content of the shared page to the new page and mark new page as read-write
+// TODO: Optimisation (i.e part 2.1) - Maintaining reverse mapping from physical page to the list of processes that are sharing the page
+void
+pagefault_handler(){
+  // obtain the address that caused the page fault
+  uint fault_addr = rcr2(); // rcr2() returns the address that caused the page fault
+  // cprintf("Page fault at address: %x\n", fault_addr);
+
+  // Assuming that the page fault is due to a write operation
+  // We need to allocate a new page for the process and copy the content of the shared page to the new page and mark new page as read-write
+
+  // Get the current process
+  struct proc *curproc = myproc();
+  // Get the page table of the current process
+  pde_t *pgdir = curproc->pgdir;
+
+  // Get the page table entry for the fault address
+  pte_t *pte = walkpgdir(pgdir, (void *) fault_addr, 0);
+  // sanity checks
+  if(pte == 0)
+    panic("pagefault_handler: pte should exist");
+  if(!(*pte & PTE_P))
+    panic("pagefault_handler: page not present");
+  
+  // Get the physical address of the page
+  uint pa = PTE_ADDR(*pte);
+  // Get the flags of the page
+  uint flags = PTE_FLAGS(*pte);
+
+  // Allocate a new page for the process
+  char *mem = kalloc();
+  // sanity checks
+  if(mem == 0){
+    //! Since optimization is not done, we'll enter this part in cowtest2.c testcase
+    cprintf("pagefault_handler: out of memory\n");
+    return;
+  }
+  // Copy the content of the shared page to the new page
+  memmove(mem, (char*)P2V(pa), PGSIZE);
+  // Map the new page to the page table entry
+  if(mappages(pgdir, (void*)fault_addr, PGSIZE, V2P(mem), flags | PTE_W) < 0) {
+    //incase of error, free the memory and return
+    kfree(mem);
+    cprintf("pagefault_handler: out of memory (2)\n");
+    return;
+  }
+  // Set the page table entry of only the new page as read-write (old one [*pte] should still be read-only)
+  // get the new page table entry for the fault address
+  pte_t *new_pte = walkpgdir(pgdir, (void *) fault_addr, 0);
+  // sanity checks
+  if(new_pte == 0)
+    panic("pagefault_handler: new pte should exist");
+  if(!(*new_pte & PTE_P))
+    panic("pagefault_handler: new page not present");
+  *new_pte |= PTE_W;
+
+
+  // cprintf("Page fault handled successfully\n");
 }
 
 //PAGEBREAK!

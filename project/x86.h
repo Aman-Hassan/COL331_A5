@@ -130,6 +130,7 @@ xchg(volatile uint *addr, uint newval)
   return result;
 }
 
+// The following command is used to read the value of the CR2 register. -> Gives info about the page fault.
 static inline uint
 rcr2(void)
 {
@@ -138,6 +139,7 @@ rcr2(void)
   return val;
 }
 
+// The following command is used to read the value of the CR3 register. -> Gives info about the page table.
 static inline void
 lcr3(uint val)
 {
