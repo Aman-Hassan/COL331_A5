@@ -9,6 +9,9 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct swap_slot;
+typedef uint pte_t;
+#define PTE_SWAP 0x008
 
 // bio.c
 void            binit(void);
@@ -125,6 +128,8 @@ int             wait(void);
 void            wakeup(void*);
 void            yield(void);
 void            print_rss(void);
+struct proc*    find_victim_proc(void);
+pte_t*          find_victim_page(struct proc* v_proc);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -194,3 +199,12 @@ void            pagefault_handler();
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+void            swapinit(int dev);
+void            page_swap_out(pte_t *pte, struct proc* p);
+void            write_page_to_disk(char* xx, struct swap_slot *swap_slot);
+// void            write_page_to_disk(pte_t *pte, struct swap_slot *swap_slot);
+struct swap_slot* swap_get_free_slot();
+void            page_fault_handler(void);
+void            update_rss(struct proc* p);
+void            swap_free(struct proc* p);

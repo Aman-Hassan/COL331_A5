@@ -73,6 +73,7 @@ trap(struct trapframe *tf)
     break;
   case T_PGFLT:
     //Call the page fault handler
+    // if 
     pagefault_handler();
     lapiceoi();
     break;

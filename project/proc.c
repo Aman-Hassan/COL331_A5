@@ -547,3 +547,75 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+struct proc *find_victim_proc(void)
+{
+  struct proc *p;
+  struct proc *victim = ptable.proc;
+  // cprintf("Finding victim process\n");
+  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+  {
+    if (p->state != UNUSED)
+    {
+      if ((p->rss) > (victim->rss))
+      {
+        victim = p;
+      }
+      if ((p->rss) == (victim->rss) && p->pid < victim->pid)
+      {
+        victim = p;
+      }
+    }
+  }
+  // if(victim == 0)
+  //   cprintf("No victim found\n");
+  // cprintf("Victim process found\n");
+  // cprintf("Victim pid: %d\n", victim->pid);
+  return victim;
+}
+
+pte_t *find_victim_page(struct proc *victim_proc)
+{
+  pde_t *page_dir = victim_proc->pgdir;
+  pde_t *pde;
+  pte_t *pde_table;
+  pte_t *victim_page = (void *)-1;
+  for (int i = 0; i < NPDENTRIES; i++)
+  {
+    pde = &page_dir[i];
+    if (!(*pde & PTE_P))
+    {
+      continue;
+    }
+    pde_table = (pte_t *) P2V(PTE_ADDR(*pde));
+    for (int j = 0; j < NPTENTRIES; j++)
+    {
+      victim_page = &pde_table[j];
+      if ((*victim_page & PTE_P) && (*victim_page & PTE_U) && (!(*victim_page & PTE_A)))
+          return victim_page;
+      }
+  }
+  int counter = 0;
+  for (int i = 0; i < NPDENTRIES; i++)
+  {
+    pde = &page_dir[i];
+    if (!(*pde & PTE_P))
+    {
+      continue;
+    }
+    pde_table = (pde_t *) P2V(PTE_ADDR(*pde));
+    for (int j = 0; j < NPTENTRIES; j++)
+    {
+      victim_page = &pde_table[j];
+      if ((*victim_page & PTE_P) && (*victim_page & PTE_U) && (*victim_page & PTE_A))
+      {
+        if (counter % 10 == 0)
+        {
+          *victim_page &= ~PTE_A;
+        }
+        counter++;
+      }
+    }
+  }
+  return find_victim_page(victim_proc);
+}
