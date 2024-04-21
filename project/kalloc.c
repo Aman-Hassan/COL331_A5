@@ -22,7 +22,17 @@ struct {
   int use_lock;
   uint num_free_pages;  //store number of free pages
   struct run *freelist;
+  int rmap[PHYSTOP >> PTXSHIFT]; //store the reference count of each page
 } kmem;
+
+// Small function to obtain the pointer to reference count of a page given virtual address v [we'll return pointer so that we can increment/decrement the reference count easily]
+//! This should not be used as get_ref_count (since we are not applying any lock here) -> this will be done in the caller function
+//! Use this function wisely -> only when the caller function acquires lock before calling this function
+int* get_ref_count_without_locks(char* v)
+{
+  return &kmem.rmap[V2P(v) >> PTXSHIFT];
+}
+
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -34,6 +44,7 @@ kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
+  kmem.num_free_pages = 0;
   freerange(vstart, vend);
 }
 
@@ -52,7 +63,8 @@ freerange(void *vstart, void *vend)
   for(; p + PGSIZE <= (char*)vend; p += PGSIZE)
   {
     kfree(p);
-    kmem.num_free_pages+=1;
+    // kmem.num_free_pages+=1;
+    kmem.rmap[V2P(p) >> PTXSHIFT] = 0; //initialize the reference count of each page to 0
   }
     
 }
@@ -69,15 +81,30 @@ kfree(char *v)
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
+  // // Fill with junk to catch dangling refs.
+  // memset(v, 1, PGSIZE);
+
 
   if(kmem.use_lock)
     acquire(&kmem.lock);
-  r = (struct run*)v;
-  r->next = kmem.freelist;
-  kmem.num_free_pages+=1;
-  kmem.freelist = r;
+
+  // Now depending on the value of ref_count, we can decide whether to free the page or not (if ref_count > 0, then don't free the page, just decrement)
+  int* ref_count = get_ref_count_without_locks(v); // Notice how we are not applying any locks here since lock has been applied before calling this function
+
+  if(*ref_count > 0) //if ref_count > 0, then don't free the page, just decrement
+  {
+    *ref_count -= 1;
+  }
+  if (*ref_count == 0){ //if ref_count == 0, then free the page and add it to the free list
+    *ref_count = 0; //just to be sure
+    memset(v, 1, PGSIZE); // Fill with junk to catch dangling refs.
+    //incrememnt the number of free pages and add the page to the free list
+    r = (struct run*)v;
+    r->next = kmem.freelist;
+    kmem.num_free_pages+=1;
+    kmem.freelist = r;
+  }
+
   if(kmem.use_lock)
     release(&kmem.lock);
 }
@@ -93,16 +120,22 @@ kalloc(void)
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = kmem.freelist;
+  
   if(r)
   {
     kmem.freelist = r->next;
     kmem.num_free_pages-=1;
+
+    // Set the reference count of the page to 1 since page has just been allocated
+    int* ref_count = get_ref_count_without_locks((char*)r); // Notice how we are not applying any locks here since lock has been applied before calling this function
+    *ref_count = 1;
   }
     
   if(kmem.use_lock)
     release(&kmem.lock);
   return (char*)r;
 }
+
 uint 
 num_of_FreePages(void)
 {
@@ -113,4 +146,38 @@ num_of_FreePages(void)
   release(&kmem.lock);
   
   return num_free_pages;
+}
+
+// The following functions will be called in vm.c's pagefault handler to increment/decrement the reference count of the page
+// So these functions will first acquire locks and then operate (since we are not going to be calling lock in the pagefault handler)
+
+// function to update ref_count of a page
+void update_ref_count(uint pa, int increment) // increment = 1 if we want to increment the ref_count, increment = -1 if we want to decrement the ref_count
+{
+  // sanity check for bounds of pa
+  if (pa >= PHYSTOP || pa < (uint) V2P(end))
+    panic("update_ref_count: pa out of bounds");
+  
+  acquire(&kmem.lock);
+  char* v = P2V(pa);
+  int* ref_count = get_ref_count_without_locks(v); // Notice how we are not applying any locks here since lock has been applied before calling this function
+  if (increment == 1 || increment == -1)
+    *ref_count += increment;
+  else
+    panic("update_ref_count: increment should be either 1 or -1");
+  release(&kmem.lock);
+}
+
+// function to obtain the reference count of a page [This is diff from get_ref_count_without_locks since we are applying locks here and this function is called by pagefault handler]
+uint get_ref_count(uint pa){
+  // sanity check for bounds of pa
+  if (pa >= PHYSTOP || pa < (uint) V2P(end))
+    panic("get_ref_count: pa out of bounds");
+  
+  acquire(&kmem.lock);
+  char* v = P2V(pa);
+  int* ref_count = get_ref_count_without_locks(v); // Notice how we are not applying any locks here since lock has been applied before calling this function
+  // cprintf("Reference count of page at address %x is %d\n", v, *ref_count);
+  release(&kmem.lock);
+  return (uint) *ref_count;
 }

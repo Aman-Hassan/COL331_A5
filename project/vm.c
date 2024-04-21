@@ -190,6 +190,7 @@ inituvm(pde_t *pgdir, char *init, uint sz)
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
+  // update_ref_count(V2P(mem), 1); // increment the reference count of the physical page -> Not sure why this is needed
   memset(mem, 0, PGSIZE);
   mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U);
   memmove(mem, init, sz);
@@ -320,12 +321,12 @@ clearpteu(pde_t *pgdir, char *uva)
 // So instead of allocating new pages for the child process, we will just copy the parent's page table entries and mark them as read only.
 // Note that for simplicity we are assuming that same virtual page number of parent and child process may have the same physical page number.
 pde_t*
-copyuvm(pde_t *pgdir, uint sz)
+copyuvm(struct proc *p, pde_t *pgdir, uint sz)
 {
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
+  // char *mem;
 
   if((d = setupkvm()) == 0) // d contains the new page table (setupkvm() sets up the kernel part of the page table)
     return 0;
@@ -335,22 +336,22 @@ copyuvm(pde_t *pgdir, uint sz)
     if(!(*pte & PTE_P)) 
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte); // get the physical address of the page
+    *pte &= ~PTE_W; // mark the page as read only
     flags = PTE_FLAGS(*pte); // get the flags of the page
+    
     // if((mem = kalloc()) == 0) // allocate a new page for the child process
     //   goto bad;
+
     // instead of allocating a new page (as above), we will just copy the parent's page table entry and mark it as read only
     // To copy the page table entry, we will just map the same physical page to the child's page table entry
-    mem = (char*)P2V(pa); // get the virtual address of the physical page
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags & ~PTE_W) < 0) { // map the physical page to the child's page table entry
-      //incase of error, free the memory and return
-      kfree(mem);
+    // This is because we are assuming that same virtual page number of parent and child process may have the same physical page number
+    // This is the COW (Copy On Write) mechanism
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) { // map the physical page to the child's page table entry
       goto bad;
     }
-    //TODO: increment the reference count of the physical page -> Part 2 (Later)
-    // Set the page table entry of both parent and child as read only
-    *pte &= ~PTE_W;
-    *pte |= PTE_U;
-
+    // // TODO: increment the reference count of the physical page -> Part 2.1 (Later)
+    update_ref_count(pa, 1); // increment the reference count of the physical page
+    // increment_count_ref(pa); // increment the reference count of the physical pages
     // The below code is not needed as we are not allocating new pages for the child process
     // memmove(mem, (char*)P2V(pa), PGSIZE);
     // if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
@@ -358,17 +359,20 @@ copyuvm(pde_t *pgdir, uint sz)
     //   goto bad;
     // }
   }
+  lcr3(V2P(pgdir));  // flush the TLB to save changes to the page table
   return d;
 
 bad:
   freevm(d);
+  lcr3(V2P(pgdir));  // flush the TLB to save changes to the page table
   return 0;
 }
 
 //! Adding page fault handler here for the time being
 // Need to handle the case when one of the processes attempt to write on to a shared page (which we marked as read-only)
 // In this case, we need to allocate a new page for the process and copy the content of the shared page to the new page and mark new page as read-write
-// TODO: Optimisation (i.e part 2.1) - Maintaining reverse mapping from physical page to the list of processes that are sharing the page
+// // TODO: Optimisation (i.e part 2.1) - Maintaining reverse mapping from physical page to the list of processes that are sharing the page
+// We shall maintain this reverse mapping structure in the physical page structure which i
 void
 pagefault_handler(){
   // obtain the address that caused the page fault
@@ -394,37 +398,36 @@ pagefault_handler(){
   // Get the physical address of the page
   uint pa = PTE_ADDR(*pte);
   // Get the flags of the page
-  uint flags = PTE_FLAGS(*pte);
+  // uint flags = PTE_FLAGS(*pte);
 
-  // Allocate a new page for the process
-  char *mem = kalloc();
-  // sanity checks
-  if(mem == 0){
-    //! Since optimization is not done, we'll enter this part in cowtest2.c testcase
-    cprintf("pagefault_handler: out of memory\n");
-    return;
+  // Obtain the reference count of the physical page
+  uint ref_count = get_ref_count(pa);
+  // uint ref_count = get_count_ref(pa);
+
+  if (ref_count > 1){
+    // page is shared
+    // need to allocate new page for process
+    char *mem = kalloc();
+    // sanity checks
+    if(mem == 0){
+      cprintf("pagefault_handler: out of memory\n");
+      return;
+    }
+    // decrement the reference count of the physical page
+    update_ref_count(pa, -1);
+    // Copy the content of the shared page to the new page
+    memmove(mem, (char*)P2V(pa), PGSIZE);
+    // Change permissions of the new page to read-write
+    *pte = V2P(mem) | PTE_P | PTE_W | PTE_U;
   }
-  // Copy the content of the shared page to the new page
-  memmove(mem, (char*)P2V(pa), PGSIZE);
-  // Map the new page to the page table entry
-  if(mappages(pgdir, (void*)fault_addr, PGSIZE, V2P(mem), flags | PTE_W) < 0) {
-    //incase of error, free the memory and return
-    kfree(mem);
-    cprintf("pagefault_handler: out of memory (2)\n");
-    return;
-  }
-  // Set the page table entry of only the new page as read-write (old one [*pte] should still be read-only)
-  // get the new page table entry for the fault address
-  pte_t *new_pte = walkpgdir(pgdir, (void *) fault_addr, 0);
-  // sanity checks
-  if(new_pte == 0)
-    panic("pagefault_handler: new pte should exist");
-  if(!(*new_pte & PTE_P))
-    panic("pagefault_handler: new page not present");
-  *new_pte |= PTE_W;
-
-
-  // cprintf("Page fault handled successfully\n");
+  else{
+    // page is not shared
+    // just mark the page directly as read-write
+    *pte |= PTE_W;
+  }  
+  // Flush the TLB to save changes to the page table
+  lcr3(V2P(pgdir));
+  return;
 }
 
 //PAGEBREAK!
