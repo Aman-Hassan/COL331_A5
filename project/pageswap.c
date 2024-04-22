@@ -14,9 +14,22 @@
 //? TLB Updates in swap out
 //? Invalidate page in TLB in the Page fault handler function
 
-#define MAX_SWAP_SLOTS NSWAPSLOTS
+//^ defining the swap_slot struct here and not in fs.h because fs.h cannot access NPROC variable
+struct swap_slot
+{
+  int page_perm;
+  int proc_id;
+  int is_free;
+  int swap_start; // start block of swap slot
+  int dev_id;
+  // for the purpose of COW we would need to maintain a mapping of page to processes that have mapped it
+//   uint* page_perm_map[NPROC]; // permission of swapped page
+  pte_t* swap_page_map[NPROC]; // page table entry of swapped page - We can obtain page_perm from this by using PTE_FLAGS(*pte)
+};
 
-struct swap_slot swap_slots[MAX_SWAP_SLOTS];
+#define MAX_SWAP_SLOTS SWAPBLOCKS/8 // 8 blocks per slot
+
+struct swap_slot swap_slots[MAX_SWAP_SLOTS]; // array of swap slots -> used to store the swapped out pages
 
 // initialize swap slots during booting
 void swapinit(int dev)
@@ -25,14 +38,20 @@ void swapinit(int dev)
     {
         swap_slots[i].dev_id = dev;
         swap_slots[i].is_free = 1;
-        swap_slots[i].page_perm = 0;
-        swap_slots[i].proc_id = -1;
         swap_slots[i].swap_start = i * 8 + 2; // 2 is the starting block of swap slots
+        // initialize the page_perm_map  and swap_page_map for each process
+        for (int j = 0; j < NPROC; j++){
+            swap_slots[i].page_perm_map[j] = (uint*) 0;
+        }
     }
     // cprintf("Swap slots initialized\n");
 }
 
-// New code
+// Swap out function details: 
+// Swap out is basically 
+// 1. Find a free swap slot
+// 2. Write the page to disk
+// 
 void page_swap_out(pte_t *victim_pte, struct proc *victim_proc)
 {
     if (victim_pte == (void *)-1)

@@ -61,12 +61,3 @@ struct dirent
   ushort inum;
   char name[DIRSIZ];
 };
-
-struct swap_slot
-{
-  int page_perm;
-  int is_free;
-  int swap_start; // start block of swap slot
-  int dev_id;
-  int proc_id;
-};

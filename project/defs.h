@@ -182,6 +182,7 @@ void            uartputc(int);
 
 // vm.c
 void            seginit(void);
+pde_t*          walkpgdir(pde_t*, const void*, int);
 void            kvmalloc(void);
 pde_t*          setupkvm(void);
 char*           uva2ka(pde_t*, char*);
@@ -197,9 +198,7 @@ int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
 void            pagefault_handler();
 
-// number of elements in fixed-size array
-#define NELEM(x) (sizeof(x)/sizeof((x)[0]))
-
+// pageswap.c
 void            swapinit(int dev);
 void            page_swap_out(pte_t *pte, struct proc* p);
 void            write_page_to_disk(char* xx, struct swap_slot *swap_slot);
@@ -208,3 +207,6 @@ struct swap_slot* swap_get_free_slot();
 void            page_fault_handler(void);
 void            update_rss(struct proc* p);
 void            swap_free(struct proc* p);
+
+// number of elements in fixed-size array
+#define NELEM(x) (sizeof(x)/sizeof((x)[0]))

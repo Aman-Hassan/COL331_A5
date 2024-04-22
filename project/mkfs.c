@@ -25,6 +25,7 @@ int ninodeblocks = NINODES / IPB + 1;
 int nlog = LOGSIZE;
 int nmeta;    // Number of meta blocks (boot, sb, nlog, inode, bitmap)
 int nblocks;  // Number of data blocks
+int nswap = SWAPBLOCKS;    // Number of swap blocks (8 blocks per slot)
 
 int fsfd;
 struct superblock sb;
@@ -91,19 +92,21 @@ main(int argc, char *argv[])
   }
 
   // 1 fs block = 1 disk sector
-  nmeta = 2 + nlog + ninodeblocks + nbitmap;
+  nmeta = 2 + nlog + ninodeblocks + nbitmap + nswap;
   nblocks = FSSIZE - nmeta;
 
   sb.size = xint(FSSIZE);
   sb.nblocks = xint(nblocks);
   sb.ninodes = xint(NINODES);
   sb.nlog = xint(nlog);
-  sb.logstart = xint(2);
-  sb.inodestart = xint(2+nlog);
-  sb.bmapstart = xint(2+nlog+ninodeblocks);
-
-  printf("nmeta %d (boot, super, log blocks %u inode blocks %u, bitmap blocks %u) blocks %d total %d\n",
-         nmeta, nlog, ninodeblocks, nbitmap, nblocks, FSSIZE);
+  sb.nswap = xint(nswap);
+  sb.logstart = xint(2+nswap);
+  sb.inodestart = xint(2+nlog+nswap);
+  sb.swapstart = xint(2);
+  sb.bmapstart = xint(2+nlog+ninodeblocks+nswap);
+  
+  printf("nmeta %d (boot, super,swap blocks %u log blocks %u inode blocks %u, bitmap blocks %u) blocks %d total %d\n",
+         nmeta, nswap, nlog, ninodeblocks, nbitmap, nblocks, FSSIZE);
 
   freeblock = nmeta;     // the first free block that we can allocate
 

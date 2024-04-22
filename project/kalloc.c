@@ -17,12 +17,22 @@ struct run {
   struct run *next;
 };
 
+//rmap data structure as defined in the project
+// stores ref count of each page and a 2D map for page to process
+// TODO: Could possibly change the page_proc_map to something more space efficient
+// TODO: Possibly something like a bitmap for each page to store which process is mapped to it (seems like a good idea)
+// TODO: Or maybe a linked list of processes mapped to it (but that would be slow and hard to maintain)
+struct rmap{
+  int ref_count_map[PHYSTOP >> PTXSHIFT]; //store the reference count of each page
+  pte_t* page_proc_map[PHYSTOP >> PTXSHIFT][NPROC]; //Stores whether each page is mapped to a process or not [a 2D matrix where each row corresponds to a page and each column corresponds to a process]
+};
+
 struct {
   struct spinlock lock;
   int use_lock;
   uint num_free_pages;  //store number of free pages
   struct run *freelist;
-  int rmap[PHYSTOP >> PTXSHIFT]; //store the reference count of each page
+  struct rmap rmap;
 } kmem;
 
 // Small function to obtain the pointer to reference count of a page given virtual address v [we'll return pointer so that we can increment/decrement the reference count easily]
@@ -30,7 +40,15 @@ struct {
 //! Use this function wisely -> only when the caller function acquires lock before calling this function
 int* get_ref_count_without_locks(char* v)
 {
-  return &kmem.rmap[V2P(v) >> PTXSHIFT];
+  return &kmem.rmap.ref_count_map[V2P(v) >> PTXSHIFT];
+}
+
+// Small function to obtain the pointer to page_proc_map of a page given virtual address v and process id pid [we'll return pointer so that we can easily check if the page is mapped to a process or not]
+//! This should not be used as get_page_proc (since we are not applying any lock here) -> this will be done in the caller function
+//! Use this function wisely -> only when the caller function acquires lock before calling this function
+pte_t* get_page_proc_without_locks(char* v, int pid)
+{
+  return kmem.rmap.page_proc_map[V2P(v) >> PTXSHIFT][pid];
 }
 
 
@@ -63,8 +81,8 @@ freerange(void *vstart, void *vend)
   for(; p + PGSIZE <= (char*)vend; p += PGSIZE)
   {
     kfree(p);
-    // kmem.num_free_pages+=1;
-    kmem.rmap[V2P(p) >> PTXSHIFT] = 0; //initialize the reference count of each page to 0
+    kmem.rmap.ref_count_map[V2P(p) >> PTXSHIFT] = 0; //initialize the reference count of each page to 0
+    
   }
     
 }
@@ -181,3 +199,6 @@ uint get_ref_count(uint pa){
   release(&kmem.lock);
   return (uint) *ref_count;
 }
+
+// function to update page_proc_map of a page
+

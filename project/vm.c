@@ -32,7 +32,7 @@ seginit(void)
 // Return the address of the PTE in page table pgdir
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page table pages.
-static pte_t *
+pte_t *
 walkpgdir(pde_t *pgdir, const void *va, int alloc)
 {
   pde_t *pde;
@@ -421,9 +421,9 @@ pagefault_handler(){
     *pte = V2P(mem) | PTE_P | PTE_W | PTE_U;
   }
   else{
-    // page is not shared
-    // just mark the page directly as read-write
-    *pte |= PTE_W;
+      // page is not shared
+      // just mark the page directly as read-write
+      *pte |= PTE_W;
   }  
   // Flush the TLB to save changes to the page table
   lcr3(V2P(pgdir));
