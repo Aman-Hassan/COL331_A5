@@ -3,6 +3,8 @@
 
 #define ROOTINO 1 // root i-number
 #define BSIZE 512 // block size
+#define NPROC 64
+typedef uint pte_t;
 // #define NSWAP 16  // number of swap blocks
 // Disk layout:
 // [ boot block | super block | log | inode blocks |
@@ -60,4 +62,15 @@ struct dirent
 {
   ushort inum;
   char name[DIRSIZ];
+};
+
+struct swap_slot
+{
+  uint page_permmap[NPROC];
+  int page_perm;
+  int is_free;
+  int swap_start; // start block of swap slot
+  int dev_id;
+  int proc_id;
+  pte_t* swapmap[NPROC];
 };

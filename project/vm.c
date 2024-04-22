@@ -32,7 +32,7 @@ seginit(void)
 // Return the address of the PTE in page table pgdir
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page table pages.
-pte_t *
+static pte_t *
 walkpgdir(pde_t *pgdir, const void *va, int alloc)
 {
   pde_t *pde;
@@ -81,6 +81,30 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
   }
   return 0;
 }
+
+static int
+mappages_refcount(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+{
+  char *a, *last;
+  pte_t *pte;
+
+  a = (char*)PGROUNDDOWN((uint)va);
+  last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
+  for(;;){
+    if((pte = walkpgdir(pgdir, a, 1)) == 0)
+      return -1;
+    if(*pte & PTE_P)
+      panic("remap");
+    *pte = pa | perm | PTE_P;
+    update_ref_count(pa, 1, pte);
+    if(a == last)
+      break;
+    a += PGSIZE;
+    pa += PGSIZE;
+  }
+  return 0;
+}
+
 
 // There is one page table per process, plus one that's used when
 // a CPU is not running any process (kpgdir). The kernel uses the
@@ -192,7 +216,7 @@ inituvm(pde_t *pgdir, char *init, uint sz)
   mem = kalloc();
   // update_ref_count(V2P(mem), 1); // increment the reference count of the physical page -> Not sure why this is needed
   memset(mem, 0, PGSIZE);
-  mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U);
+  mappages_refcount(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U);
   memmove(mem, init, sz);
 }
 
@@ -242,12 +266,13 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+    if(mappages_refcount(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
       cprintf("allocuvm out of memory (2)\n");
       deallocuvm(pgdir, newsz, oldsz);
       kfree(mem);
       return 0;
     }
+    myproc() -> rss += PGSIZE;
   }
   return newsz;
 }
@@ -275,6 +300,43 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       if(pa == 0)
         panic("kfree");
       char *v = P2V(pa);
+      update_ref_count(pa, -1, pte);
+      myproc()->rss-=PGSIZE;
+      if(get_count_ref(pa)==0)
+        kfree(v);
+      *pte = 0;
+    }
+    else if((*pte & PTE_SWAP) !=0){
+      // get the swap slot
+      // find out the refcount 
+      // decrease the refcount
+      // if refcount is zero then kfree
+    }
+  }
+  return newsz;
+}
+
+int
+deallocuvm_p(pde_t *pgdir, uint oldsz, uint newsz, struct proc* p)
+{
+  pte_t *pte;
+  uint a, pa;
+
+  if(newsz >= oldsz)
+    return oldsz;
+
+  a = PGROUNDUP(newsz);
+  for(; a  < oldsz; a += PGSIZE){
+    pte = walkpgdir(pgdir, (char*)a, 0);
+    if(!pte)
+      a = PGADDR(PDX(a) + 1, 0, 0) - PGSIZE;
+    else if((*pte & PTE_P) != 0){
+      pa = PTE_ADDR(*pte);
+      if(pa == 0)
+        panic("kfree");
+      char *v = P2V(pa);
+      update_ref_count(pa, -1, pte);
+      p->rss-=PGSIZE;
       kfree(v);
       *pte = 0;
     }
@@ -292,6 +354,23 @@ freevm(pde_t *pgdir)
   if(pgdir == 0)
     panic("freevm: no pgdir");
   deallocuvm(pgdir, KERNBASE, 0);
+  for(i = 0; i < NPDENTRIES; i++){
+    if(pgdir[i] & PTE_P){
+      char * v = P2V(PTE_ADDR(pgdir[i]));
+      kfree(v);
+    }
+  }
+  kfree((char*)pgdir);
+}
+
+void
+freevm_p(pde_t *pgdir,struct proc* p)
+{
+  uint i;
+
+  if(pgdir == 0)
+    panic("freevm: no pgdir");
+  deallocuvm_p(pgdir, KERNBASE, 0,p);
   for(i = 0; i < NPDENTRIES; i++){
     if(pgdir[i] & PTE_P){
       char * v = P2V(PTE_ADDR(pgdir[i]));
@@ -333,31 +412,19 @@ copyuvm(struct proc *p, pde_t *pgdir, uint sz)
   for(i = 0; i < sz; i += PGSIZE){ // loop over the parent's page table entries
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0) // get the page table entry for the virtual address i
       panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P)) 
-      panic("copyuvm: page not present");
+    if(!(*pte & PTE_P)) {
+      swap_in(pte);
+    }
+      // panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte); // get the physical address of the page
     *pte &= ~PTE_W; // mark the page as read only
     flags = PTE_FLAGS(*pte); // get the flags of the page
     
-    // if((mem = kalloc()) == 0) // allocate a new page for the child process
-    //   goto bad;
-
-    // instead of allocating a new page (as above), we will just copy the parent's page table entry and mark it as read only
-    // To copy the page table entry, we will just map the same physical page to the child's page table entry
-    // This is because we are assuming that same virtual page number of parent and child process may have the same physical page number
-    // This is the COW (Copy On Write) mechanism
-    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) { // map the physical page to the child's page table entry
+    p->rss += PGSIZE;
+    if(mappages_refcount(d, (void*)i, PGSIZE, pa, flags) < 0) { // map the physical page to the child's page table entry
       goto bad;
     }
-    // // TODO: increment the reference count of the physical page -> Part 2.1 (Later)
-    update_ref_count(pa, 1); // increment the reference count of the physical page
-    // increment_count_ref(pa); // increment the reference count of the physical pages
-    // The below code is not needed as we are not allocating new pages for the child process
-    // memmove(mem, (char*)P2V(pa), PGSIZE);
-    // if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-    //   kfree(mem);
-    //   goto bad;
-    // }
+
   }
   lcr3(V2P(pgdir));  // flush the TLB to save changes to the page table
   return d;
@@ -368,62 +435,39 @@ bad:
   return 0;
 }
 
-//! Adding page fault handler here for the time being
-// Need to handle the case when one of the processes attempt to write on to a shared page (which we marked as read-only)
-// In this case, we need to allocate a new page for the process and copy the content of the shared page to the new page and mark new page as read-write
-// // TODO: Optimisation (i.e part 2.1) - Maintaining reverse mapping from physical page to the list of processes that are sharing the page
-// We shall maintain this reverse mapping structure in the physical page structure which i
 void
 pagefault_handler(){
-  // obtain the address that caused the page fault
-  uint fault_addr = rcr2(); // rcr2() returns the address that caused the page fault
-  // cprintf("Page fault at address: %x\n", fault_addr);
 
-  // Assuming that the page fault is due to a write operation
-  // We need to allocate a new page for the process and copy the content of the shared page to the new page and mark new page as read-write
+  uint fault_addr = PGROUNDDOWN(rcr2());
 
-  // Get the current process
   struct proc *curproc = myproc();
   // Get the page table of the current process
   pde_t *pgdir = curproc->pgdir;
-
-  // Get the page table entry for the fault address
   pte_t *pte = walkpgdir(pgdir, (void *) fault_addr, 0);
   // sanity checks
   if(pte == 0)
     panic("pagefault_handler: pte should exist");
-  if(!(*pte & PTE_P))
-    panic("pagefault_handler: page not present");
-  
-  // Get the physical address of the page
+  if(!(*pte & PTE_P)){
+    page_fault_handler();
+    return;
+  }
   uint pa = PTE_ADDR(*pte);
-  // Get the flags of the page
-  // uint flags = PTE_FLAGS(*pte);
 
-  // Obtain the reference count of the physical page
-  uint ref_count = get_ref_count(pa);
-  // uint ref_count = get_count_ref(pa);
+  uint ref_count = get_count_ref(pa);
 
   if (ref_count > 1){
-    // page is shared
-    // need to allocate new page for process
+    update_ref_count(pa, -1, pte);
     char *mem = kalloc();
-    // sanity checks
     if(mem == 0){
       cprintf("pagefault_handler: out of memory\n");
       return;
     }
-    // decrement the reference count of the physical page
-    update_ref_count(pa, -1);
-    // Copy the content of the shared page to the new page
     memmove(mem, (char*)P2V(pa), PGSIZE);
-    // Change permissions of the new page to read-write
     *pte = V2P(mem) | PTE_P | PTE_W | PTE_U;
+    update_ref_count(V2P(mem),1,pte);
   }
   else{
-      // page is not shared
-      // just mark the page directly as read-write
-      *pte |= PTE_W;
+    *pte |= PTE_W;
   }  
   // Flush the TLB to save changes to the page table
   lcr3(V2P(pgdir));
@@ -445,9 +489,7 @@ uva2ka(pde_t *pgdir, char *uva)
   return (char*)P2V(PTE_ADDR(*pte));
 }
 
-// Copy len bytes from p to user address va in page table pgdir.
-// Most useful when pgdir is not the current page table.
-// uva2ka ensures this only works for PTE_U pages.
+
 int
 copyout(pde_t *pgdir, uint va, void *p, uint len)
 {

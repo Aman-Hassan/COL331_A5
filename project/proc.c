@@ -142,10 +142,6 @@ userinit(void)
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
-  // this assignment to p->state lets other cores
-  // run this process. the acquire forces the above
-  // writes to be visible, and the lock is also needed
-  // because the assignment might not be atomic.
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
@@ -197,6 +193,7 @@ fork(void)
     return -1;
   }
   np->sz = curproc->sz;
+  // np->rss = np->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
 
@@ -267,6 +264,21 @@ exit(void)
   panic("zombie exit");
 }
 
+void clear_all_entries(struct proc* proc){
+  int entry = NPDENTRIES-1;
+  while(entry>=0){
+          if((proc->pgdir[entry] & PTE_P)){
+              pte_t* pte_temp = (pte_t*)P2V(PTE_ADDR(proc->pgdir[entry]));
+              for(int k=0; k<NPTENTRIES ;++k){
+                  int flag = pte_temp[k] & PTE_P;
+                  if(!(flag)){
+                      clean_all_slots(&pte_temp[k]);
+                  }
+              }
+          }
+          entry--;
+        }
+}
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
 int
@@ -286,10 +298,11 @@ wait(void)
       havekids = 1;
       if(p->state == ZOMBIE){
         // Found one.
+        clear_all_entries(p);
         pid = p->pid;
         kfree(p->kstack);
         p->kstack = 0;
-        freevm(p->pgdir);
+        freevm_p(p->pgdir,p);
         p->pid = 0;
         p->parent = 0;
         p->name[0] = 0;
@@ -595,27 +608,32 @@ pte_t *find_victim_page(struct proc *victim_proc)
           return victim_page;
       }
   }
-  int counter = 0;
-  for (int i = 0; i < NPDENTRIES; i++)
-  {
-    pde = &page_dir[i];
-    if (!(*pde & PTE_P))
+  int count = (victim_proc->rss + 9) / 10;
+    int flag = 0;
+    for (int i = 0; i < NPDENTRIES; ++i)
     {
-      continue;
-    }
-    pde_table = (pde_t *) P2V(PTE_ADDR(*pde));
-    for (int j = 0; j < NPTENTRIES; j++)
-    {
-      victim_page = &pde_table[j];
-      if ((*victim_page & PTE_P) && (*victim_page & PTE_U) && (*victim_page & PTE_A))
-      {
-        if (counter % 10 == 0)
+        if (victim_proc->pgdir[i] & PTE_P)
         {
-          *victim_page &= ~PTE_A;
+            pte_t *pt = (pte_t *)P2V(PTE_ADDR(victim_proc->pgdir[i]));
+            for (int j = 0; j < NPTENTRIES; ++j)
+            {
+                if ((pt[j] & PTE_P) && (pt[j] & PTE_U) && (pt[j] & PTE_A))
+                {
+                    if (count > 0)
+                    {
+                        pt[j] &= ~PTE_A;
+                    }
+                    else
+                    {
+                        flag ++;
+                        break;
+                    }
+                }
+                count--;
+            }
         }
-        counter++;
-      }
+        if (flag == 1)
+            break;
     }
-  }
   return find_victim_page(victim_proc);
 }

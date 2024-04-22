@@ -14,22 +14,9 @@
 //? TLB Updates in swap out
 //? Invalidate page in TLB in the Page fault handler function
 
-//^ defining the swap_slot struct here and not in fs.h because fs.h cannot access NPROC variable
-struct swap_slot
-{
-  int page_perm;
-  int proc_id;
-  int is_free;
-  int swap_start; // start block of swap slot
-  int dev_id;
-  // for the purpose of COW we would need to maintain a mapping of page to processes that have mapped it
-//   uint* page_perm_map[NPROC]; // permission of swapped page
-  pte_t* swap_page_map[NPROC]; // page table entry of swapped page - We can obtain page_perm from this by using PTE_FLAGS(*pte)
-};
+#define MAX_SWAP_SLOTS SWAPBLOCKS/8
 
-#define MAX_SWAP_SLOTS SWAPBLOCKS/8 // 8 blocks per slot
-
-struct swap_slot swap_slots[MAX_SWAP_SLOTS]; // array of swap slots -> used to store the swapped out pages
+struct swap_slot swap_slots[MAX_SWAP_SLOTS];
 
 // initialize swap slots during booting
 void swapinit(int dev)
@@ -38,40 +25,48 @@ void swapinit(int dev)
     {
         swap_slots[i].dev_id = dev;
         swap_slots[i].is_free = 1;
+        swap_slots[i].page_perm = 0;
+        swap_slots[i].proc_id = -1;
         swap_slots[i].swap_start = i * 8 + 2; // 2 is the starting block of swap slots
-        // initialize the page_perm_map  and swap_page_map for each process
-        for (int j = 0; j < NPROC; j++){
-            swap_slots[i].page_perm_map[j] = (uint*) 0;
+        for (int j = 0; j < NPROC; ++j)
+        {
+            swap_slots[i].swapmap[j] = 0;
+            swap_slots[i].page_permmap[j] = 0;
         }
     }
     // cprintf("Swap slots initialized\n");
 }
 
-// Swap out function details: 
-// Swap out is basically 
-// 1. Find a free swap slot
-// 2. Write the page to disk
-// 
+// New code
 void page_swap_out(pte_t *victim_pte, struct proc *victim_proc)
 {
+    // cprintf("pageswapped\n");
     if (victim_pte == (void *)-1)
     {
         panic("No victim page found");
     }
-    victim_proc->rss -= PGSIZE;
     struct swap_slot *swap_slot = swap_get_free_slot();
     if (swap_slot == (void *)-1)
     {
         panic("No free swap slot found");
     }
-    swap_slot->page_perm = PTE_FLAGS(*victim_pte);
     uint pa = PTE_ADDR(*victim_pte);
     write_page_to_disk((char *)P2V(pa), swap_slot);
-    kfree((char *)P2V(pa));
-    *victim_pte = ((swap_slot->swap_start) << PTXSHIFT) | PTE_FLAGS(*victim_pte);
-    *victim_pte &= ~PTE_P;
-    *victim_pte |= PTE_SWAP;
-    swap_slot->proc_id = victim_proc->pid;
+    // cprintf("page written\n");
+    for(int i=0;i<NPROC;++i){
+        pte_t* pte = (pte_t *) mylist(pa, i);
+        if(pte==0){
+            continue;
+        }
+        (swap_slot->page_permmap)[i] = PTE_FLAGS(*pte);
+        swap_slot->swapmap[i] = pte;
+        *pte = ((swap_slot->swap_start) << PTXSHIFT) | PTE_FLAGS(*pte);
+        *pte &= ~PTE_P| PTE_SWAP;
+        update_ref_count(pa, -1, pte);
+        // cprintf("update %x %x\n", pa, *pte);
+    }
+    kfree((char*)P2V(pa));
+
 }
 
 void write_page_to_disk(char *page_start, struct swap_slot *swap_slot)
@@ -103,17 +98,74 @@ struct swap_slot *swap_get_free_slot()
     cprintf("No free slot found\n");
     return (void *)-1;
 }
+static pte_t *
+walkpgdir(pde_t *pgdir, const void *va, int alloc)
+{
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  if(*pde & PTE_P){
+    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+  } else {
+    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
+      return 0;
+
+    memset(pgtab, 0, PGSIZE);
+    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
+}
+
+
+void clean_all_slots(pte_t *pte)
+{
+    int slot_id = 0 ;
+    while (slot_id < MAX_SWAP_SLOTS)
+    {   
+        int if_free = swap_slots[slot_id].is_free;
+        if (if_free == 0)
+        {
+            for (int i = NPROC; i >=0; i--)
+            {
+                if (swap_slots[slot_id].swapmap[i] == pte)
+                {
+                    swap_slots[slot_id].swapmap[i] = 0;
+                }
+            }
+            int count = 0;
+            for (int i = 0; i < NPROC; i++)
+            {
+                if (swap_slots[slot_id].swapmap[i] == 0)
+                {
+                    count++;
+                }
+            }
+            if (count == NPROC)
+            {
+                swap_slots[slot_id].is_free = 1;
+                int proc = 0;
+                while (proc < NPROC)
+                {
+                    swap_slots[slot_id].swapmap[proc] = 0;
+                    swap_slots[slot_id].page_permmap[proc] = 0;
+                    proc++;
+                }
+            }
+        }
+        slot_id++;
+    }
+}
 
 void page_fault_handler(void)
 {
-    // cprintf("Page fault handler\n");
-    uint faulting_address = rcr2();
+    uint faulting_address = PGROUNDDOWN(rcr2());
     struct proc *curproc = myproc();
     pde_t *pgdir = curproc->pgdir;
     pte_t *pte = walkpgdir(pgdir, (void *)faulting_address, 0);
+
     int swap_slot = *pte >> PTXSHIFT; // Get the swap block number from the PTE
     char *mem = kalloc();
-    // cprintf("Memory allocated, mem: %d\n", mem);
     if (mem == 0)
     {
         panic("Failed to allocate memory for swapped in page");
@@ -127,28 +179,82 @@ void page_fault_handler(void)
         brelse(b);
     }
     int swap_index = (blockno - 2) / 8;
-    *pte = V2P(mem) | swap_slots[swap_index].page_perm;
-    *pte |= PTE_P;
+    int proc_id = 0;
+    while(proc_id < NPROC)
+    {
+        if (swap_slots[swap_index].swapmap[proc_id] == 0)
+        {
+            proc_id++;
+            continue;
+        }
+        pte_t *pte_2 = swap_slots[swap_index].swapmap[proc_id];
+        uint perm = swap_slots[swap_index].page_permmap[proc_id];
+        proc_id ++;
+        *pte_2 = V2P(mem) | perm | PTE_P | PTE_W;
+        *pte_2 &= ~PTE_SWAP;
+        update_ref_count(V2P(mem), 1, pte_2);
+    }
     swap_slots[swap_index].is_free = 1;
-    swap_slots[swap_index].page_perm = 0;
-    swap_slots[swap_index].proc_id = -1;
-    *pte &= ~PTE_SWAP;
+    int proc_j = NPROC - 1;
+    while (proc_j>=0)
+    {
+        swap_slots[swap_index].swapmap[proc_j] = 0;
+        swap_slots[swap_index].page_permmap[proc_j] = 0;
+        proc_j--;
+    }
+    return;
+}
+
+void swap_in(pte_t *pte)
+{
+    // pte_t *pte = walkpgdir(pgdir, (void *)faulting_address, 0);
+    // cprintf("swapping in va %x, pte %x, pid %x\n",faulting_address, *pte, curproc->pid);
+
+    int swap_slot = *pte >> PTXSHIFT; // Get the swap block number from the PTE
+    char *mem = kalloc();
+    // cprintf("Memory allocated, mem: %d\n", mem);
+    if (mem == 0)
+    {
+        panic("Failed to allocate memory for swapped in page");
+    }
+    myproc()->rss += PGSIZE;
+    int blockno = swap_slot;
+    for (int i = 0; i < 8; i++)
+    {
+        struct buf *b = bread(ROOTDEV, blockno + i);
+        memmove(mem + i * BSIZE, (void *)b->data, BSIZE);
+        brelse(b);
+    }
+    int swap_index = (blockno - 2) / 8;
+    int proc_id = 0;
+    while(proc_id < NPROC)
+    {
+        if (swap_slots[swap_index].swapmap[proc_id] != 0)
+        {
+        pte_t *pte_2 = swap_slots[swap_index].swapmap[proc_id];
+        uint perm = swap_slots[swap_index].page_permmap[proc_id];
+        *pte_2 = V2P(mem);
+        *pte_2 &= ~PTE_SWAP| perm| PTE_P | PTE_W;
+        update_ref_count(V2P(mem), 1, pte_2);
+        }
+        else{
+            proc_id++;
+            continue;
+        }
+        proc_id++;
+    }
+    int proc_j = NPROC-1;
+    swap_slots[swap_index].is_free = 1;
+    while (proc_j >= 0)
+    {
+        swap_slots[swap_index].swapmap[proc_j] = 0;
+        swap_slots[swap_index].page_permmap[proc_j] = 0;
+        proc_j--;
+    }
     // cprintf("Page fault handler exited\n");
     return;
 }
 
-// RSS Updates using  allocuvm
-void update_rss(struct proc *p)
-{
-    // cprintf("Updating RSS\n");
-    int oldsz = p->sz;
-    int newsz = allocuvm(p->pgdir, oldsz, oldsz + 4096); // allocate one more page
-    if (newsz == 0)
-    {
-        return;
-    }
-    p->sz = newsz;
-}
 
 // Process Terminate, free the slots and other updates
 // Upon completion of the process, clean the unused swap slots.
@@ -165,3 +271,4 @@ void swap_free(struct proc *p)
         }
     }
 }
+

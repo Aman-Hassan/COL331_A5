@@ -70,11 +70,12 @@ void            ioapicinit(void);
 char*           kalloc(void);
 uint            num_of_FreePages(void);
 void            kfree(char*);
+pte_t *         mylist(uint, int);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
 //new functions
-void            update_ref_count(uint, int);
-uint            get_ref_count(uint);
+void            update_ref_count(uint, int, pte_t *);
+uint            get_count_ref(uint);
 
 // kbd.c
 void            kbdintr(void);
@@ -182,13 +183,14 @@ void            uartputc(int);
 
 // vm.c
 void            seginit(void);
-pde_t*          walkpgdir(pde_t*, const void*, int);
 void            kvmalloc(void);
 pde_t*          setupkvm(void);
 char*           uva2ka(pde_t*, char*);
 int             allocuvm(pde_t*, uint, uint);
 int             deallocuvm(pde_t*, uint, uint);
+int             deallocuvm_p(pde_t*, uint, uint, struct proc*);
 void            freevm(pde_t*);
+void            freevm_p(pde_t*,struct proc*);
 void            inituvm(pde_t*, char*, uint);
 int             loaduvm(pde_t*, char*, struct inode*, uint, uint);
 pde_t*          copyuvm(struct proc*, pde_t*, uint);
@@ -197,16 +199,18 @@ void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
 void            pagefault_handler();
+void clear_iterate(struct proc*);
+// number of elements in fixed-size array
+#define NELEM(x) (sizeof(x)/sizeof((x)[0]))
 
-// pageswap.c
+void            swap_in(pte_t *);
 void            swapinit(int dev);
+void            clean_all_slots(pte_t *pte);
 void            page_swap_out(pte_t *pte, struct proc* p);
-void            write_page_to_disk(char* xx, struct swap_slot *swap_slot);
+void            write_page_to_disk(char*, struct swap_slot *);
 // void            write_page_to_disk(pte_t *pte, struct swap_slot *swap_slot);
-struct swap_slot* swap_get_free_slot();
+struct swap_slot*  swap_get_free_slot();
 void            page_fault_handler(void);
 void            update_rss(struct proc* p);
 void            swap_free(struct proc* p);
 
-// number of elements in fixed-size array
-#define NELEM(x) (sizeof(x)/sizeof((x)[0]))
