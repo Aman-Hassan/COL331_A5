@@ -40,7 +40,7 @@ void swapinit(int dev)
 // New code
 void page_swap_out(pte_t *victim_pte, struct proc *victim_proc)
 {
-    // cprintf("pageswapped\n");
+    cprintf("pages_swap_out\n");
     if (victim_pte == (void *)-1)
     {
         panic("No victim page found");
@@ -52,7 +52,7 @@ void page_swap_out(pte_t *victim_pte, struct proc *victim_proc)
     }
     uint pa = PTE_ADDR(*victim_pte);
     write_page_to_disk((char *)P2V(pa), swap_slot);
-    // cprintf("page written\n");
+    cprintf("page written\n");
     for(int i=0;i<NPROC;++i){
         pte_t* pte = (pte_t *) mylist(pa, i);
         if(pte==0){
@@ -63,9 +63,10 @@ void page_swap_out(pte_t *victim_pte, struct proc *victim_proc)
         *pte = ((swap_slot->swap_start) << PTXSHIFT) | PTE_FLAGS(*pte);
         *pte &= ~PTE_P| PTE_SWAP;
         update_ref_count(pa, -1, pte);
-        // cprintf("update %x %x\n", pa, *pte);
+        cprintf("update %x %x\n", pa, *pte);
     }
     kfree((char*)P2V(pa));
+    cprintf("page_swap_out exited\n");
 
 }
 
@@ -159,6 +160,7 @@ void clean_all_slots(pte_t *pte)
 
 void page_fault_handler(void)
 {
+    cprintf("Page fault handler\n");
     uint faulting_address = PGROUNDDOWN(rcr2());
     struct proc *curproc = myproc();
     pde_t *pgdir = curproc->pgdir;
@@ -202,13 +204,15 @@ void page_fault_handler(void)
         swap_slots[swap_index].page_permmap[proc_j] = 0;
         proc_j--;
     }
+    cprintf("Page fault handler exited\n");
     return;
 }
 
 void swap_in(pte_t *pte)
 {
-    // pte_t *pte = walkpgdir(pgdir, (void *)faulting_address, 0);
+    // pte_t *pte = walkpgdir(pgdir, (void *)faulting_address, 0)
     // cprintf("swapping in va %x, pte %x, pid %x\n",faulting_address, *pte, curproc->pid);
+    cprintf("Swapping in\n");
 
     int swap_slot = *pte >> PTXSHIFT; // Get the swap block number from the PTE
     char *mem = kalloc();
@@ -251,7 +255,7 @@ void swap_in(pte_t *pte)
         swap_slots[swap_index].page_permmap[proc_j] = 0;
         proc_j--;
     }
-    // cprintf("Page fault handler exited\n");
+    cprintf("swap_in exited\n");
     return;
 }
 

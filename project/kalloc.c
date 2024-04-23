@@ -108,7 +108,7 @@ kfree(char *v)
 char*
 kalloc(void)
 {
-  // cprintf("kalloc: num_free_pages = %d\n", kmem.num_free_pages);
+  cprintf("kalloc: num_free_pages = %d\n", kmem.num_free_pages);
   struct run *r;
 
   if(kmem.use_lock)
@@ -121,14 +121,18 @@ kalloc(void)
   }
   if(kmem.use_lock)
     release(&kmem.lock);
-  if (r)
+  if (r){
+    cprintf("kalloc returning after first time:%x\n", r);
     return (char*)r;
+  }
   struct proc* victim = find_victim_proc();
   if(victim == 0)
     cprintf("No victim proc found\n");
   pte_t* pte = find_victim_page(victim);
   page_swap_out(pte,victim);
-  return kalloc();
+  char* v = kalloc();
+  cprintf("kalloc returning after second time: %x\n", v);
+  return v;
 }
 
 uint 

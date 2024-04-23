@@ -59,31 +59,9 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 // be page-aligned
 
 // The below function does the following - it maps the virtual address to the physical address in the page table pgdir.
-// This would help us to 
+// This would help us to access the physical memory using the virtual address.
 static int
-mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
-{
-  char *a, *last;
-  pte_t *pte;
-
-  a = (char*)PGROUNDDOWN((uint)va); // get the page aligned address of the virtual address
-  last = (char*)PGROUNDDOWN(((uint)va) + size - 1); // get the page aligned address of the last byte of the virtual address
-  for(;;){
-    if((pte = walkpgdir(pgdir, a, 1)) == 0) // get the page table entry for the virtual address a
-      return -1;
-    if(*pte & PTE_P)
-      panic("remap");
-    *pte = pa | perm | PTE_P;
-    if(a == last)
-      break;
-    a += PGSIZE;
-    pa += PGSIZE;
-  }
-  return 0;
-}
-
-static int
-mappages_refcount(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm, int update_count)
 {
   char *a, *last;
   pte_t *pte;
@@ -96,7 +74,8 @@ mappages_refcount(pde_t *pgdir, void *va, uint size, uint pa, int perm)
     if(*pte & PTE_P)
       panic("remap");
     *pte = pa | perm | PTE_P;
-    update_ref_count(pa, 1, pte);
+    if(update_count)
+      update_ref_count(pa, 1, pte);
     if(a == last)
       break;
     a += PGSIZE;
@@ -155,7 +134,7 @@ setupkvm(void)
     panic("PHYSTOP too high");
   for(k = kmap; k < &kmap[NELEM(kmap)]; k++)
     if(mappages(pgdir, k->virt, k->phys_end - k->phys_start,
-                (uint)k->phys_start, k->perm) < 0) {
+                (uint)k->phys_start, k->perm,0) < 0) {
       freevm(pgdir);
       return 0;
     }
@@ -216,7 +195,7 @@ inituvm(pde_t *pgdir, char *init, uint sz)
   mem = kalloc();
   // update_ref_count(V2P(mem), 1); // increment the reference count of the physical page -> Not sure why this is needed
   memset(mem, 0, PGSIZE);
-  mappages_refcount(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U);
+  mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U,1);
   memmove(mem, init, sz);
 }
 
@@ -266,7 +245,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages_refcount(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+    if(mappages(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U,1) < 0){
       cprintf("allocuvm out of memory (2)\n");
       deallocuvm(pgdir, newsz, oldsz);
       kfree(mem);
@@ -421,7 +400,7 @@ copyuvm(struct proc *p, pde_t *pgdir, uint sz)
     flags = PTE_FLAGS(*pte); // get the flags of the page
     
     p->rss += PGSIZE;
-    if(mappages_refcount(d, (void*)i, PGSIZE, pa, flags) < 0) { // map the physical page to the child's page table entry
+    if(mappages(d, (void*)i, PGSIZE, pa, flags,1) < 0) { // map the physical page to the child's page table entry
       goto bad;
     }
 

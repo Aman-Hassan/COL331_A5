@@ -563,9 +563,9 @@ procdump(void)
 
 struct proc *find_victim_proc(void)
 {
+  cprintf("Finding victim process\n");
   struct proc *p;
   struct proc *victim = ptable.proc;
-  // cprintf("Finding victim process\n");
   for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
   {
     if (p->state != UNUSED)
@@ -582,13 +582,13 @@ struct proc *find_victim_proc(void)
   }
   // if(victim == 0)
   //   cprintf("No victim found\n");
-  // cprintf("Victim process found\n");
-  // cprintf("Victim pid: %d\n", victim->pid);
+  cprintf("Victim process found, pid: %d\n", victim->pid);
   return victim;
 }
 
 pte_t *find_victim_page(struct proc *victim_proc)
 {
+  cprintf("Finding victim page\n");
   pde_t *page_dir = victim_proc->pgdir;
   pde_t *pde;
   pte_t *pde_table;
@@ -604,9 +604,11 @@ pte_t *find_victim_page(struct proc *victim_proc)
     for (int j = 0; j < NPTENTRIES; j++)
     {
       victim_page = &pde_table[j];
-      if ((*victim_page & PTE_P) && (*victim_page & PTE_U) && (!(*victim_page & PTE_A)))
+      if ((*victim_page & PTE_P) && (*victim_page & PTE_U) && (!(*victim_page & PTE_A))){
+          cprintf("Victim page found without having to remove 10 percent of the pages\n");
           return victim_page;
       }
+    }
   }
   int count = (victim_proc->rss + 9) / 10;
     int flag = 0;
@@ -635,5 +637,6 @@ pte_t *find_victim_page(struct proc *victim_proc)
         if (flag == 1)
             break;
     }
+  cprintf("Victim page found after removing 10 percent\n");
   return find_victim_page(victim_proc);
 }
